@@ -29,6 +29,7 @@ import { SecurityScoreCalculator } from '../src/tools/security-score.js';
 import { EnvAuditor } from '../src/tools/env-auditor.js';
 import { SecurityFixGenerator } from '../src/tools/security-fix-generator.js';
 import { PreCommitHookGenerator } from '../src/tools/pre-commit-hook.js';
+import { GitHubUpdater } from '../src/tools/github-updater.js';
 
 /**
  * MCP Server for Guardian-Agent
@@ -117,6 +118,16 @@ class GuardianMCPServer {
 
       case 'explain_vulnerability':
         return await this.explainVulnerability(params);
+
+      // Update tools
+      case 'check_for_updates':
+        return await this.checkForUpdates(params);
+
+      case 'update_guardian_agent':
+        return await this.updateGuardianAgent(params);
+
+      case 'update_vuln_databases':
+        return await this.updateVulnDatabases(params);
 
       default:
         return { error: `Unknown tool: ${toolName}` };
@@ -893,6 +904,46 @@ class GuardianMCPServer {
       vulnerability: explanation
     };
   }
+
+  // ============================================
+  // Update Tools
+  // ============================================
+
+  /**
+   * Check for updates from GitHub
+   */
+  async checkForUpdates(params = {}) {
+    console.error(`[Guardian] Checking for updates...`);
+
+    const updater = new GitHubUpdater(this.projectPath);
+    const result = await updater.checkForUpdates();
+
+    return result;
+  }
+
+  /**
+   * Update Guardian-Agent from GitHub
+   */
+  async updateGuardianAgent(params = {}) {
+    console.error(`[Guardian] Updating from GitHub...`);
+
+    const updater = new GitHubUpdater(this.projectPath);
+    const result = await updater.update(params);
+
+    return result;
+  }
+
+  /**
+   * Update only vulnerability databases
+   */
+  async updateVulnDatabases(params = {}) {
+    console.error(`[Guardian] Updating vulnerability databases...`);
+
+    const updater = new GitHubUpdater(this.projectPath);
+    const result = await updater.updateVulnDatabases();
+
+    return result;
+  }
 }
 
 /**
@@ -1080,6 +1131,28 @@ async function main() {
                       vulnerability_type: { type: 'string', description: 'Type: sql-injection, xss, hardcoded-secrets, nosql-injection, csrf, missing-auth' }
                     }
                   }
+                },
+                // Update tools
+                {
+                  name: 'check_for_updates',
+                  description: 'Check if a newer version of Guardian-Agent is available on GitHub',
+                  inputSchema: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'update_guardian_agent',
+                  description: 'Update Guardian-Agent to the latest version from GitHub',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      force: { type: 'boolean', description: 'Force update even with local changes' },
+                      backup: { type: 'boolean', default: true, description: 'Backup files before updating' }
+                    }
+                  }
+                },
+                {
+                  name: 'update_vuln_databases',
+                  description: 'Update only the vulnerability databases (keeps checks current)',
+                  inputSchema: { type: 'object', properties: {} }
                 }
               ]
             }
