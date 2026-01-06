@@ -1,14 +1,35 @@
 {
   "name": "Guardian-Agent",
-  "version": "1.0.0",
-  "description": "A defensive security scanner that helps developers find and fix vulnerabilities in their own projects.",
+  "version": "1.1.0",
+  "description": "A defensive security scanner with Superpowers integration. Helps developers find and fix vulnerabilities with A-F grading, auto-fix generation, and TDD workflows.",
   "author": {
     "name": "naieum"
   },
-  "commands": [
-    "./commands/security-scan.md",
-    "./commands/check-secrets.md",
-    "./commands/audit-supabase.md"
-  ],
+  "repository": "https://github.com/naieum/ChiefWiggum",
+  "keywords": ["security", "vulnerability", "scanner", "superpowers", "defensive"],
+  "capabilities": {
+    "scanning": [
+      "Tech stack detection",
+      "Live CVE database integration",
+      "React ecosystem vulnerabilities",
+      "Framework-specific checks",
+      "Database security (Supabase, MongoDB, PostgreSQL)",
+      "Authentication auditing",
+      "API security checks"
+    ],
+    "user_friendly": [
+      "A-F security grading",
+      "Auto-fix code generation",
+      "Pre-commit hook setup",
+      "Environment file auditing",
+      "Vulnerability explanations"
+    ],
+    "superpowers_skills": [
+      "security-audit-workflow",
+      "security-fix-tdd",
+      "parallel-security-scan",
+      "vulnerability-remediation"
+    ]
+  },
   "agents": ["./agents/security-auditor.md"]
 }

