@@ -164,9 +164,25 @@ class ReconnaissancePhase:
         }
     }
 
+    # Maximum number of cached results to prevent unbounded memory growth
+    MAX_CACHED_RESULTS = 100
+
     def __init__(self, auth_manager: AuthorizationManager):
         self.auth_manager = auth_manager
         self.results: dict[str, TechFingerprint] = {}
+
+    def clear_results(self):
+        """Clear cached results to free memory"""
+        self.results.clear()
+
+    def _cache_result(self, target: str, fingerprint: TechFingerprint):
+        """Cache a result with bounded size"""
+        # Prevent unbounded memory growth
+        if len(self.results) >= self.MAX_CACHED_RESULTS:
+            # Remove oldest entry (first key in dict - Python 3.7+ maintains order)
+            oldest_key = next(iter(self.results))
+            del self.results[oldest_key]
+        self.results[target] = fingerprint
 
     def execute(self, target: str) -> tuple[bool, TechFingerprint | str]:
         """
@@ -398,7 +414,7 @@ class ReconnaissancePhase:
                 fingerprint.frameworks.append(fw_type)
                 fingerprint.confidence_scores[f"framework_{fw_type.value}"] = final_confidence
 
-        self.results[target] = fingerprint
+        self._cache_result(target, fingerprint)
         return fingerprint
 
     def get_supabase_indicators(self) -> dict:

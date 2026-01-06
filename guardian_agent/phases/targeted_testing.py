@@ -382,9 +382,23 @@ class TargetedTestingPhase:
         },
     }
 
+    # Maximum number of results to store to prevent unbounded memory growth
+    MAX_RESULTS = 500
+
     def __init__(self, auth_manager: AuthorizationManager):
         self.auth_manager = auth_manager
         self.results: list[TestResult] = []
+
+    def clear_results(self):
+        """Clear stored results to free memory"""
+        self.results.clear()
+
+    def _add_result(self, result: TestResult):
+        """Add a result with bounded size"""
+        self.results.append(result)
+        # Prevent unbounded memory growth by trimming oldest results
+        if len(self.results) > self.MAX_RESULTS:
+            self.results = self.results[-self.MAX_RESULTS:]
 
     def get_tests_for_fingerprint(
         self,

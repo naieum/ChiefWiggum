@@ -104,6 +104,9 @@ class AuthorizationManager:
     CRITICAL: No active testing should proceed without proper authorization.
     """
 
+    # Maximum number of audit log entries to prevent unbounded memory growth
+    MAX_AUDIT_LOG_SIZE = 1000
+
     def __init__(self):
         self.current_level: AuthorizationLevel = AuthorizationLevel.NONE
         self.scope: Optional[AuthorizationScope] = None
@@ -197,12 +200,16 @@ class AuthorizationManager:
         return True, "Authorized"
 
     def _log_audit(self, event: str, details: any):
-        """Log authorization events for audit trail"""
+        """Log authorization events for audit trail with bounded size"""
         self._audit_log.append({
             "timestamp": datetime.now().isoformat(),
             "event": event,
             "details": details
         })
+        # Prevent unbounded memory growth by trimming old entries
+        if len(self._audit_log) > self.MAX_AUDIT_LOG_SIZE:
+            # Keep the most recent entries, removing oldest
+            self._audit_log = self._audit_log[-self.MAX_AUDIT_LOG_SIZE:]
 
     def get_audit_log(self) -> list[dict]:
         """Return the audit log for this session"""

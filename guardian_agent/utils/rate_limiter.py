@@ -121,11 +121,15 @@ class AdaptiveRateLimiter(RateLimiter):
     and error rates.
     """
 
+    # Window size for tracking error/success rates to prevent unbounded counter growth
+    RATE_WINDOW_SIZE = 100
+
     def __init__(self, config: Optional[RateLimitConfig] = None):
         super().__init__(config)
         self._response_times: deque = deque(maxlen=100)
-        self._error_count: int = 0
-        self._success_count: int = 0
+        # Use deques instead of counters to track recent events with bounded memory
+        self._recent_errors: deque = deque(maxlen=self.RATE_WINDOW_SIZE)
+        self._recent_successes: deque = deque(maxlen=self.RATE_WINDOW_SIZE)
 
     def record_response_time(self, response_time_ms: float):
         """Record a response time for adaptive adjustment"""
@@ -144,13 +148,14 @@ class AdaptiveRateLimiter(RateLimiter):
                 )
 
     def record_error(self):
-        """Record an error response"""
-        self._error_count += 1
+        """Record an error response with bounded tracking"""
+        import time
+        self._recent_errors.append(time.time())
 
-        # If error rate is high, slow down
-        total = self._error_count + self._success_count
+        # Calculate error rate from recent window
+        total = len(self._recent_errors) + len(self._recent_successes)
         if total >= 10:
-            error_rate = self._error_count / total
+            error_rate = len(self._recent_errors) / total
             if error_rate > 0.1:  # More than 10% errors
                 self.config.requests_per_second = max(
                     1.0,
@@ -158,14 +163,15 @@ class AdaptiveRateLimiter(RateLimiter):
                 )
 
     def record_success(self):
-        """Record a successful request"""
+        """Record a successful request with bounded tracking"""
         super().record_success()
-        self._success_count += 1
+        import time
+        self._recent_successes.append(time.time())
 
-        # If things are going well, gradually increase rate
-        total = self._error_count + self._success_count
+        # Calculate error rate from recent window
+        total = len(self._recent_errors) + len(self._recent_successes)
         if total >= 20:
-            error_rate = self._error_count / total
+            error_rate = len(self._recent_errors) / total
             if error_rate < 0.05:  # Less than 5% errors
                 self.config.requests_per_second = min(
                     50.0,  # Cap at 50 rps

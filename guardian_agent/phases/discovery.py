@@ -198,11 +198,28 @@ class DiscoveryPhase:
         EndpointType.HEALTH: [r'"status":', r'"healthy"', r'"ok"', r'UP', r'DOWN'],
     }
 
+    # Maximum number of cached results to prevent unbounded memory growth
+    MAX_CACHED_RESULTS = 100
+
     def __init__(self, auth_manager: AuthorizationManager):
         self.auth_manager = auth_manager
         self.results: dict[str, DiscoveryResults] = {}
         self._request_count = 0
         self._last_request_time = 0.0
+
+    def clear_results(self):
+        """Clear cached results to free memory"""
+        self.results.clear()
+        self._request_count = 0
+
+    def _cache_result(self, target: str, result: DiscoveryResults):
+        """Cache a result with bounded size"""
+        # Prevent unbounded memory growth
+        if len(self.results) >= self.MAX_CACHED_RESULTS:
+            # Remove oldest entry (first key in dict - Python 3.7+ maintains order)
+            oldest_key = next(iter(self.results))
+            del self.results[oldest_key]
+        self.results[target] = result
 
     def execute(
         self,

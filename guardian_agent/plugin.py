@@ -48,6 +48,10 @@ class AssessmentStatus(Enum):
 @dataclass
 class AssessmentState:
     """Tracks the current state of an assessment"""
+    # Maximum sizes to prevent unbounded memory growth
+    MAX_TEST_RESULTS: int = field(default=500, repr=False)
+    MAX_ERRORS: int = field(default=100, repr=False)
+
     status: AssessmentStatus = AssessmentStatus.NOT_STARTED
     target: Optional[str] = None
     fingerprint: Optional[TechFingerprint] = None
@@ -57,6 +61,18 @@ class AssessmentState:
     errors: list[str] = field(default_factory=list)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    def add_test_result(self, result: TestResult):
+        """Add a test result with bounded size"""
+        self.test_results.append(result)
+        if len(self.test_results) > self.MAX_TEST_RESULTS:
+            self.test_results = self.test_results[-self.MAX_TEST_RESULTS:]
+
+    def add_error(self, error: str):
+        """Add an error with bounded size"""
+        self.errors.append(error)
+        if len(self.errors) > self.MAX_ERRORS:
+            self.errors = self.errors[-self.MAX_ERRORS:]
 
 
 class GuardianAgent:
@@ -205,7 +221,7 @@ class GuardianAgent:
             self.state.status = AssessmentStatus.RECONNAISSANCE
             recon_success, recon_result = self._run_reconnaissance(target)
             if not recon_success:
-                self.state.errors.append(f"Reconnaissance failed: {recon_result}")
+                self.state.add_error(f"Reconnaissance failed: {recon_result}")
                 self.state.status = AssessmentStatus.FAILED
                 return False, recon_result
 
@@ -216,7 +232,7 @@ class GuardianAgent:
                 self.state.status = AssessmentStatus.DISCOVERY
                 disc_success, disc_result = self._run_discovery(target, custom_wordlist)
                 if not disc_success:
-                    self.state.errors.append(f"Discovery failed: {disc_result}")
+                    self.state.add_error(f"Discovery failed: {disc_result}")
                     # Continue anyway - discovery failure shouldn't stop testing
 
                 self.state.discovery_results = disc_result if disc_success else None
@@ -225,7 +241,7 @@ class GuardianAgent:
             self.state.status = AssessmentStatus.TESTING
             test_success, test_results = self._run_targeted_testing(target)
             if not test_success:
-                self.state.errors.append(f"Testing failed: {test_results}")
+                self.state.add_error(f"Testing failed: {test_results}")
                 self.state.status = AssessmentStatus.FAILED
                 return False, test_results
 
@@ -242,7 +258,7 @@ class GuardianAgent:
 
         except Exception as e:
             self.state.status = AssessmentStatus.FAILED
-            self.state.errors.append(str(e))
+            self.state.add_error(str(e))
             return False, f"Assessment failed: {str(e)}"
 
     def run_reconnaissance_only(self, target: str) -> tuple[bool, TechFingerprint | str]:
@@ -442,9 +458,13 @@ class GuardianAgent:
         return True
 
     def reset(self):
-        """Reset the agent for a new assessment"""
+        """Reset the agent for a new assessment and clear all caches"""
         self.auth_manager.revoke_authorization()
         self.state = AssessmentState()
+        # Clear all phase caches to free memory
+        self.recon.clear_results()
+        self.discovery.clear_results()
+        self.testing.clear_results()
 
     # ==================== CLAUDE INTEGRATION HELPERS ====================
 
