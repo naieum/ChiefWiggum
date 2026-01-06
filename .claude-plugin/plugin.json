@@ -1,0 +1,14 @@
+{
+  "name": "Guardian-Agent",
+  "version": "1.0.0",
+  "description": "A defensive security scanner that helps developers find and fix vulnerabilities in their own projects.",
+  "author": {
+    "name": "naieum"
+  },
+  "commands": [
+    "./commands/security-scan.md",
+    "./commands/check-secrets.md",
+    "./commands/audit-supabase.md"
+  ],
+  "agents": ["./agents/security-auditor.md"]
+}

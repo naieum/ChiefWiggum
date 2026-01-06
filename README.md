@@ -41,6 +41,29 @@ Tests your localhost server for:
 
 ## Installation
 
+### Option 1: Claude Code MCP Plugin (Recommended)
+
+Install Guardian-Agent as an MCP server in Claude Code:
+
+```bash
+# Clone the repo
+git clone https://github.com/naieum/ChiefWiggum.git
+cd ChiefWiggum
+
+# Copy the MCP config to your project
+cp .mcp.json /path/to/your/project/.mcp.json
+
+# Or install globally for all projects
+cp .mcp.json ~/.claude/.mcp.json
+```
+
+Then in Claude Code, you can use:
+- `@security-auditor scan my project` - Run a full security scan
+- `@security-auditor check database config` - Audit database settings
+- `@security-auditor check localhost headers` - Test your dev server
+
+### Option 2: Standalone Installation
+
 ```bash
 # Clone the repo
 git clone https://github.com/naieum/ChiefWiggum.git
@@ -52,6 +75,24 @@ cd ChiefWiggum
 ```
 
 ## Usage
+
+### As an MCP Plugin in Claude Code
+
+Once installed, the following tools are available:
+
+| Tool | Description |
+|------|-------------|
+| `scan_project_security` | Scan source files for vulnerabilities |
+| `audit_database_config` | Check Supabase/Postgres/MongoDB config |
+| `check_localhost_headers` | Test HTTP security headers on localhost |
+| `generate_security_report` | Generate JSON/Markdown/SARIF reports |
+
+Example conversation:
+```
+You: Scan this project for security issues
+Claude: [Uses scan_project_security tool]
+       Found 3 issues: 1 critical, 2 medium...
+```
 
 ### As a Node.js Module
 
