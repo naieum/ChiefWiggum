@@ -19,6 +19,7 @@ import { DatabaseSecurityAnalyzer } from '../src/analyzers/database-security.js'
 import { AuthSecurityAnalyzer } from '../src/analyzers/auth-security.js';
 import { APISecurityAnalyzer } from '../src/analyzers/api-security.js';
 import { DependencySecurityAnalyzer } from '../src/analyzers/dependency-security.js';
+import { LiveCVEChecker, ReactSecurityChecker } from '../src/analyzers/live-cve-checker.js';
 import { ConfigAuditor } from '../src/auditors/config.js';
 import { SafeChecker } from '../src/auditors/safe-checks.js';
 import { Reporter } from '../src/reporters/json-reporter.js';
@@ -83,9 +84,59 @@ class GuardianMCPServer {
       case 'generate_security_report':
         return await this.generateReport(params);
 
+      case 'check_live_cves':
+        return await this.checkLiveCVEs(params);
+
+      case 'check_react_vulnerabilities':
+        return await this.checkReactVulnerabilities(params);
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
+  }
+
+  /**
+   * Check live CVE databases for vulnerabilities
+   */
+  async checkLiveCVEs(params = {}) {
+    console.error(`[Guardian] Checking live CVE databases...`);
+
+    const checker = new LiveCVEChecker(this.projectPath);
+    const results = await checker.checkLiveVulnerabilities();
+
+    this.findings = [...this.findings, ...results.findings];
+
+    return {
+      success: true,
+      source: 'OSV (Google Open Source Vulnerabilities)',
+      packages_checked: results.packagesChecked,
+      vulnerabilities_found: results.vulnerabilitiesFound,
+      findings: results.findings,
+      note: 'Data fetched from live vulnerability databases. Results are current as of this scan.'
+    };
+  }
+
+  /**
+   * Check React ecosystem for vulnerabilities
+   */
+  async checkReactVulnerabilities(params = {}) {
+    console.error(`[Guardian] Checking React ecosystem vulnerabilities...`);
+
+    const checker = new ReactSecurityChecker(this.projectPath);
+    const results = await checker.check();
+
+    this.findings = [...this.findings, ...results.findings];
+
+    return {
+      success: true,
+      findings_count: results.findings.length,
+      findings: results.findings,
+      summary: results.summary,
+      checked_packages: [
+        'react', 'react-dom', 'next', 'react-router', '@remix-run/react',
+        'react-query', 'styled-components', 'react-hook-form', 'formik'
+      ]
+    };
   }
 
   /**
@@ -706,6 +757,16 @@ async function main() {
                       format: { type: 'string', enum: ['json', 'markdown', 'sarif'] }
                     }
                   }
+                },
+                {
+                  name: 'check_live_cves',
+                  description: 'Fetches LIVE vulnerability data from OSV database (always up-to-date)',
+                  inputSchema: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'check_react_vulnerabilities',
+                  description: 'Checks React ecosystem packages for known vulnerabilities (react, next.js, react-router, etc.)',
+                  inputSchema: { type: 'object', properties: {} }
                 }
               ]
             }
