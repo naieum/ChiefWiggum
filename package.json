@@ -1,0 +1,24 @@
+{
+  "name": "guardian-agent",
+  "version": "1.0.0",
+  "description": "A defensive security scanner plugin for Claude Code - helps developers find and fix vulnerabilities in their own projects",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "scan": "node src/index.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "keywords": [
+    "security",
+    "scanner",
+    "vulnerability",
+    "claude-code",
+    "static-analysis",
+    "devsecops"
+  ],
+  "author": "naieum",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
