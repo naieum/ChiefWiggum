@@ -3,6 +3,12 @@ Safe Check Implementations for Guardian-Agent
 
 Non-destructive security checks that can be run without
 Exploit-Approval flag. These checks do not modify target state.
+
+Mitigations for Active Tests Breaking Things:
+- ValidatedHTTPClient enforces read-only operations for safe checks
+- Method validation prevents POST/PUT/DELETE/PATCH in safe mode
+- Endpoint blocklist prevents accessing admin/internal endpoints
+- All HTTP operations go through the validated wrapper
 """
 
 from dataclasses import dataclass
@@ -10,6 +16,142 @@ from typing import Optional, Callable
 import re
 import base64
 import json
+
+
+class HTTPValidationError(Exception):
+    """Raised when HTTP operation violates safe check constraints."""
+    pass
+
+
+class ValidatedHTTPClient:
+    """
+    HTTP client wrapper that enforces constraints for safe checks.
+
+    Prevents safe checks from accidentally performing destructive operations.
+    """
+
+    # Only read-only HTTP methods allowed in safe check mode
+    SAFE_METHODS = {'GET', 'HEAD', 'OPTIONS'}
+
+    # Endpoints that should never be accessed during safe checks
+    BLOCKED_ENDPOINT_PATTERNS = [
+        r'/admin',
+        r'/internal',
+        r'/superuser',
+        r'/system',
+        r'/config',
+        r'/delete',
+        r'/drop',
+        r'/truncate',
+        r'/__',  # Internal framework endpoints
+    ]
+
+    def __init__(
+        self,
+        http_callback: Optional[Callable],
+        safe_mode: bool = True,
+        max_body_size: int = 10000
+    ):
+        """
+        Initialize validated HTTP client.
+
+        Args:
+            http_callback: Underlying HTTP callback
+            safe_mode: If True, enforce safe check constraints
+            max_body_size: Maximum request body size (bytes)
+        """
+        self._http = http_callback
+        self._safe_mode = safe_mode
+        self._max_body_size = max_body_size
+        self._request_count = 0
+        self._blocked_requests: list[dict] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[dict] = None,
+        body: Optional[str] = None
+    ) -> tuple[int, dict, str]:
+        """
+        Make HTTP request with safe mode validation.
+
+        Args:
+            method: HTTP method
+            url: Target URL
+            headers: Request headers
+            body: Request body
+
+        Returns:
+            tuple: (status_code, response_headers, response_body)
+
+        Raises:
+            HTTPValidationError: If request violates safe mode constraints
+        """
+        headers = headers or {}
+
+        if self._safe_mode:
+            self._validate_safe_request(method, url, body)
+
+        if not self._http:
+            raise HTTPValidationError(
+                "No HTTP callback provided. Cannot make requests."
+            )
+
+        self._request_count += 1
+        return self._http(method, url, headers, body)
+
+    def _validate_safe_request(self, method: str, url: str, body: Optional[str]) -> None:
+        """
+        Validate request meets safe check constraints.
+
+        Raises HTTPValidationError if constraints violated.
+        """
+        method_upper = method.upper()
+
+        # Validate HTTP method
+        if method_upper not in self.SAFE_METHODS:
+            self._blocked_requests.append({
+                "reason": "method_not_allowed",
+                "method": method,
+                "url": url
+            })
+            raise HTTPValidationError(
+                f"HTTP method '{method}' not allowed in safe mode. "
+                f"Only {self.SAFE_METHODS} are permitted for safe checks."
+            )
+
+        # Validate no body for GET requests in safe mode
+        if method_upper == 'GET' and body:
+            self._blocked_requests.append({
+                "reason": "body_not_allowed_for_get",
+                "url": url
+            })
+            raise HTTPValidationError(
+                "GET requests with body not allowed in safe mode."
+            )
+
+        # Validate endpoint is not blocked
+        url_lower = url.lower()
+        for pattern in self.BLOCKED_ENDPOINT_PATTERNS:
+            if re.search(pattern, url_lower):
+                self._blocked_requests.append({
+                    "reason": "blocked_endpoint",
+                    "pattern": pattern,
+                    "url": url
+                })
+                raise HTTPValidationError(
+                    f"Endpoint matching '{pattern}' is blocked in safe mode. "
+                    f"URL: {url}"
+                )
+
+    def get_stats(self) -> dict:
+        """Get HTTP client statistics."""
+        return {
+            "request_count": self._request_count,
+            "blocked_requests": self._blocked_requests,
+            "safe_mode": self._safe_mode
+        }
 
 
 @dataclass
@@ -29,6 +171,8 @@ class SafeCheckRunner:
 
     All checks in this class are read-only and safe to run
     without explicit exploit approval.
+
+    Uses ValidatedHTTPClient to enforce safe operations.
     """
 
     def __init__(self, http_callback: Optional[Callable] = None):
@@ -39,7 +183,33 @@ class SafeCheckRunner:
             http_callback: Callback for making HTTP requests
                           Signature: (method, url, headers, body) -> (status, headers, body)
         """
-        self._http = http_callback
+        # Wrap callback in validated client for safe mode enforcement
+        self._http_client = ValidatedHTTPClient(
+            http_callback=http_callback,
+            safe_mode=True
+        ) if http_callback else None
+        self._http = http_callback  # Keep for backward compatibility
+
+    def _safe_request(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[dict] = None,
+        body: Optional[str] = None
+    ) -> Optional[tuple[int, dict, str]]:
+        """
+        Make a validated safe HTTP request.
+
+        Returns None if no HTTP client configured.
+        """
+        if not self._http_client:
+            return None
+
+        try:
+            return self._http_client.request(method, url, headers, body)
+        except HTTPValidationError as e:
+            # Log but don't fail - allow check to report "couldn't verify"
+            return None
 
     # ==================== SUPABASE CHECKS ====================
 
@@ -52,7 +222,8 @@ class SafeCheckRunner:
         """
         Check if Supabase tables are exposed due to missing RLS.
 
-        This check only performs SELECT queries (read-only).
+        This check only performs SELECT queries (read-only) via
+        the validated HTTP client to ensure safety.
         """
         evidence = []
         vulnerable = False
@@ -64,27 +235,57 @@ class SafeCheckRunner:
         ]
 
         exposed_tables = []
+        checked_tables = []
+        errors = []
 
         for table in tables_to_check:
             # Check if table is accessible without auth
             check_url = f"{supabase_url}/rest/v1/{table}?limit=1"
             headers = {
                 "apikey": anon_key,
-                "Authorization": f"Bearer {anon_key}"
+                "Authorization": f"Bearer {anon_key}",
+                "Prefer": "return=representation"
             }
 
-            # Note: In real implementation, make HTTP request via callback
-            # response = self._http("GET", check_url, headers, None)
+            # Use validated safe request
+            result = self._safe_request("GET", check_url, headers, None)
+
+            if result is None:
+                # No HTTP client or request blocked
+                if not self._http_client:
+                    evidence.append("HTTP client not configured - cannot verify")
+                continue
+
+            status, resp_headers, body = result
+            checked_tables.append(table)
 
             # Check for successful response with data
-            # if response.status == 200 and response.body:
-            #     exposed_tables.append(table)
-            #     evidence.append(f"Table '{table}' returns data without user auth")
+            if status == 200:
+                try:
+                    data = json.loads(body) if body else []
+                    if data and len(data) > 0:
+                        exposed_tables.append(table)
+                        evidence.append(
+                            f"Table '{table}' returns data ({len(data)} rows) "
+                            "without user authentication"
+                        )
+                except json.JSONDecodeError:
+                    pass
+            elif status == 401:
+                evidence.append(f"Table '{table}' properly requires authentication (401)")
+            elif status == 403:
+                evidence.append(f"Table '{table}' properly restricted (403 Forbidden)")
+            elif status == 404:
+                pass  # Table doesn't exist, skip
+            else:
+                errors.append(f"Table '{table}': unexpected status {status}")
 
         if exposed_tables:
             vulnerable = True
             confidence = 0.9
-            evidence.append(f"Exposed tables: {', '.join(exposed_tables)}")
+            evidence.append(f"VULNERABLE: Exposed tables: {', '.join(exposed_tables)}")
+        elif checked_tables:
+            evidence.append(f"Checked {len(checked_tables)} tables, none exposed")
 
         return SafeCheckResult(
             check_id="SUP-001",
@@ -93,8 +294,9 @@ class SafeCheckRunner:
             confidence=confidence,
             evidence=evidence,
             details={
-                "tables_checked": tables_to_check,
+                "tables_checked": checked_tables,
                 "exposed_tables": exposed_tables,
+                "errors": errors,
                 "remediation": "Enable RLS on exposed tables and create appropriate policies"
             }
         )

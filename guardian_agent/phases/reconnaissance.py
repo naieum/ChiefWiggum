@@ -9,14 +9,250 @@ Detectable Technologies:
 - Frameworks: Express, Django, FastAPI, Rails, Spring
 - Cloud Services: AWS, GCP, Azure, Vercel, Netlify
 - Authentication: Auth0, Okta, Firebase Auth, Supabase Auth
+
+Mitigations for False Positives:
+- Context-aware pattern matching (code vs comments)
+- Proper URL path boundary validation
+- Source reliability weighting
+- Conflict detection for contradictory indicators
 """
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
+from statistics import mean, stdev
 from typing import Optional
+from urllib.parse import urlparse
 import re
 import json
 from ..authorization import AuthorizationManager, TestingPhase
+
+
+# Source reliability profiles for weighted confidence scoring
+SOURCE_RELIABILITY = {
+    "domain": 0.98,          # Domain match is highly reliable
+    "endpoint_structure": 0.90,
+    "header_name": 0.82,
+    "header_value": 0.70,
+    "error_pattern": 0.65,
+    "js_pattern": 0.65,
+    "body_pattern": 0.60,
+    "unknown": 0.50
+}
+
+
+class PatternValidator:
+    """Validates pattern matches with contextual rules to reduce false positives."""
+
+    @staticmethod
+    def validate_header_pattern(header_name: str, pattern: str) -> tuple[bool, float]:
+        """
+        Validate header pattern with stricter rules.
+
+        Returns:
+            (is_valid_match, adjusted_confidence)
+        """
+        pattern_lower = pattern.lower()
+        header_lower = header_name.lower()
+
+        # Rule 1: Exact header name match is highest confidence
+        if header_lower == pattern_lower:
+            return True, 1.0
+
+        # Rule 2: Header starts with pattern (more reliable than substring)
+        if header_lower.startswith(pattern_lower):
+            return True, 0.9
+
+        # Rule 3: Pattern is a complete token in header name
+        # Split by common delimiters: -, _, .
+        tokens = re.split(r'[-_.]', header_lower)
+        pattern_tokens = re.split(r'[-_.]', pattern_lower)
+
+        if all(pt in tokens for pt in pattern_tokens if pt):
+            return True, 0.8
+
+        # Rule 4: Reject simple substring matches (too broad)
+        return False, 0.0
+
+    @staticmethod
+    def is_reliable_header_for_values(header_name: str) -> bool:
+        """Check if header value is reliable for fingerprinting."""
+        reliable_headers = {
+            'server', 'x-powered-by', 'x-aspnet-version',
+            'x-framework', 'x-platform', 'x-generator'
+        }
+        return header_name.lower() in reliable_headers
+
+
+class CodeContextAnalyzer:
+    """Analyzes code patterns with context awareness."""
+
+    @staticmethod
+    def extract_context(body: str, match_position: int, window: int = 100) -> str:
+        """Extract surrounding context around match."""
+        start = max(0, match_position - window)
+        end = min(len(body), match_position + window)
+        return body[start:end]
+
+    @staticmethod
+    def is_likely_comment_or_docs(context: str, pattern: str) -> bool:
+        """Determine if pattern match is in comment, string, or documentation."""
+        # Find where pattern appears in context
+        pattern_pos = context.find(pattern) if pattern in context else len(context) // 2
+
+        # Check for comment indicators before match
+        before_match = context[:pattern_pos]
+        comment_markers = ['//', '/*', '*', '#', '--', '<!--', '"""', "'''"]
+
+        for marker in comment_markers:
+            if marker in before_match:
+                # Check if it's on the same line (for single-line comments)
+                if marker in ['//', '#', '--']:
+                    # Find last newline before match
+                    last_newline = before_match.rfind('\n')
+                    if marker in before_match[last_newline:]:
+                        return True
+                # Multi-line comments
+                elif marker in ['/*', '<!--', '"""', "'''"]:
+                    # Check if closing marker appears
+                    closing = {'/*': '*/', '<!--': '-->', '"""': '"""', "'''": "'''"}
+                    close = closing.get(marker, '')
+                    if close and close not in before_match[before_match.rfind(marker):]:
+                        return True
+
+        # Check for documentation patterns
+        doc_indicators = ['@param', '@returns', '@example', 'docs:', 'documentation']
+        if any(doc in context.lower() for doc in doc_indicators):
+            return True
+
+        return False
+
+    @staticmethod
+    def is_executable_code(context: str) -> bool:
+        """Check if pattern appears to be in executable code."""
+        executable_indicators = [
+            r'import\s+', r'require\s*\(', r'function\s+',
+            r'class\s+', r'const\s+', r'let\s+', r'var\s+',
+            r'new\s+', r'=\s*new\s+', r'\.\w+\s*\('
+        ]
+
+        return any(
+            re.search(indicator, context, re.IGNORECASE)
+            for indicator in executable_indicators
+        )
+
+
+class URLValidator:
+    """Validates URL patterns with proper path boundary validation."""
+
+    @staticmethod
+    def parse_url_path(url: str) -> list[str]:
+        """Parse URL into path segments."""
+        parsed = urlparse(url)
+        return [seg for seg in parsed.path.split('/') if seg]
+
+    @staticmethod
+    def validate_endpoint_in_url(endpoint: str, url: str) -> tuple[bool, float]:
+        """
+        Validate endpoint pattern in URL path structure.
+
+        Prevents false positives from substring matches like
+        /api-v2 matching /api endpoint.
+
+        Returns:
+            (is_valid_match, confidence)
+        """
+        endpoint_segments = [seg for seg in endpoint.strip('/').split('/') if seg]
+        url_segments = URLValidator.parse_url_path(url)
+
+        if not endpoint_segments:
+            return False, 0.0
+
+        # Rule 1: Exact consecutive match in URL segments
+        endpoint_str = '/'.join(endpoint_segments)
+        url_str = '/'.join(url_segments)
+
+        # Check with boundary
+        url_pattern = r'(?:^|/){}(?:$|/)'.format(re.escape(endpoint_str))
+        if re.search(url_pattern, '/' + url_str + '/'):
+            return True, 0.95
+
+        # Rule 2: Endpoint segments appear consecutively in URL
+        for i in range(len(url_segments) - len(endpoint_segments) + 1):
+            if url_segments[i:i+len(endpoint_segments)] == endpoint_segments:
+                return True, 0.90
+
+        return False, 0.0
+
+    @staticmethod
+    def validate_domain_in_url(domain: str, url: str) -> tuple[bool, float]:
+        """Validate domain with exact boundary matching."""
+        parsed = urlparse(url if '://' in url else f'https://{url}')
+        netloc = parsed.netloc.lower()
+        domain_lower = domain.lower()
+
+        # Remove port if present
+        if ':' in netloc:
+            netloc = netloc.split(':')[0]
+
+        # Rule 1: Exact domain match
+        if netloc == domain_lower:
+            return True, 0.99
+
+        # Rule 2: Domain as subdomain (e.g., api.supabase.co)
+        if netloc.endswith('.' + domain_lower):
+            return True, 0.95
+
+        # No partial substring matches for domains
+        return False, 0.0
+
+
+class ConflictDetector:
+    """Detects mutually exclusive or contradictory indicators."""
+
+    # Technologies that shouldn't coexist at high confidence
+    MUTUALLY_EXCLUSIVE = {
+        'databases': [
+            {'supabase', 'firebase'},  # Both are BaaS, unlikely together
+            {'mongodb', 'postgresql', 'mysql'},  # Primary DB choices
+        ]
+    }
+
+    @staticmethod
+    def detect_conflicts(indicators: list[dict]) -> list[str]:
+        """
+        Identify mutually exclusive technology indicators.
+
+        Returns list of conflict warnings.
+        """
+        conflicts = []
+
+        # Group by type and get highest confidence for each
+        db_detections: dict[str, list[float]] = defaultdict(list)
+        for ind in indicators:
+            if ind.get("type") == "database":
+                db_detections[ind["detected"]].append(ind.get("confidence", 0))
+
+        # Check for conflicting detections
+        if len(db_detections) > 1:
+            # Get average confidence per database
+            db_avg_conf = {
+                db: mean(confs)
+                for db, confs in db_detections.items()
+            }
+
+            # If multiple databases with confidence > 0.7, flag conflict
+            high_conf_dbs = {db for db, conf in db_avg_conf.items() if conf > 0.7}
+
+            for exclusive_set in ConflictDetector.MUTUALLY_EXCLUSIVE.get('databases', []):
+                overlap = high_conf_dbs & exclusive_set
+                if len(overlap) > 1:
+                    conflicts.append(
+                        f"Multiple high-confidence databases detected: {overlap}. "
+                        "Possible false positives - verify manually."
+                    )
+
+        return conflicts
 
 
 class DatabaseType(Enum):
@@ -229,6 +465,8 @@ class ReconnaissancePhase:
         """
         Analyze HTTP headers for technology indicators.
 
+        Uses boundary-aware pattern matching to reduce false positives.
+
         Args:
             headers: Dict of HTTP response headers
 
@@ -236,39 +474,57 @@ class ReconnaissancePhase:
             List of detected indicators with confidence scores
         """
         indicators = []
+        validator = PatternValidator()
 
         for db_type, patterns in self.DATABASE_PATTERNS.items():
             for header_pattern in patterns["headers"]:
                 for header_name, header_value in headers.items():
-                    if header_pattern.lower() in header_name.lower():
+                    # Validate header name match with proper boundaries
+                    is_valid, confidence = validator.validate_header_pattern(
+                        header_name,
+                        header_pattern
+                    )
+
+                    if is_valid:
                         indicators.append({
                             "type": "database",
                             "detected": db_type.value,
-                            "source": "header",
+                            "source": "header_name",
                             "header_name": header_name,
-                            "confidence": 0.8
+                            "pattern": header_pattern,
+                            "confidence": confidence * SOURCE_RELIABILITY["header_name"],
+                            "validation_rule": "header_boundary_match"
                         })
-                    if header_pattern.lower() in str(header_value).lower():
+
+                    # Header value matching - only for reliable headers
+                    if (header_pattern.lower() in str(header_value).lower() and
+                            validator.is_reliable_header_for_values(header_name)):
                         indicators.append({
                             "type": "database",
                             "detected": db_type.value,
                             "source": "header_value",
                             "header_name": header_name,
-                            "confidence": 0.7
+                            "confidence": SOURCE_RELIABILITY["header_value"],
+                            "validation_rule": "reliable_header_value"
                         })
 
-        # Check framework headers
+        # Check framework headers with exact matching
         for fw_type, patterns in self.FRAMEWORK_PATTERNS.items():
-            if "headers" in patterns:
+            if "headers" in patterns and isinstance(patterns["headers"], dict):
                 for header_name, expected_value in patterns["headers"].items():
-                    if header_name.lower() in [h.lower() for h in headers]:
-                        actual_value = headers.get(header_name, "")
-                        if expected_value.lower() in actual_value.lower():
+                    # Case-insensitive header lookup
+                    headers_lower = {k.lower(): v for k, v in headers.items()}
+                    if header_name.lower() in headers_lower:
+                        actual_value = headers_lower[header_name.lower()]
+                        if expected_value.lower() in str(actual_value).lower():
                             indicators.append({
                                 "type": "framework",
                                 "detected": fw_type.value,
                                 "source": "header",
-                                "confidence": 0.9
+                                "header_name": header_name,
+                                "expected_value": expected_value,
+                                "confidence": 0.9,
+                                "validation_rule": "exact_header_match"
                             })
 
         return indicators
@@ -277,6 +533,8 @@ class ReconnaissancePhase:
         """
         Analyze response body for technology indicators.
 
+        Uses context-aware matching to distinguish code from comments/docs.
+
         Args:
             body: The HTTP response body
 
@@ -284,38 +542,89 @@ class ReconnaissancePhase:
             List of detected indicators
         """
         indicators = []
+        context_analyzer = CodeContextAnalyzer()
 
         # Check database patterns in error messages or JS
         for db_type, patterns in self.DATABASE_PATTERNS.items():
             for error_pattern in patterns.get("error_patterns", []):
-                if re.search(error_pattern, body, re.IGNORECASE):
+                for match in re.finditer(error_pattern, body, re.IGNORECASE):
+                    context = context_analyzer.extract_context(body, match.start())
+
+                    # Skip if likely in comment or documentation
+                    if context_analyzer.is_likely_comment_or_docs(context, match.group()):
+                        continue
+
+                    # Higher confidence if in executable code context
+                    is_executable = context_analyzer.is_executable_code(context)
+                    base_confidence = 0.85 if is_executable else 0.55
+
                     indicators.append({
                         "type": "database",
                         "detected": db_type.value,
                         "source": "error_pattern",
                         "pattern": error_pattern,
-                        "confidence": 0.85
+                        "confidence": base_confidence * SOURCE_RELIABILITY["error_pattern"],
+                        "context_validated": is_executable,
+                        "validation_rule": "context_aware"
                     })
 
             for js_pattern in patterns.get("js_patterns", []):
-                if re.search(js_pattern, body, re.IGNORECASE):
+                for match in re.finditer(js_pattern, body, re.IGNORECASE):
+                    context = context_analyzer.extract_context(body, match.start())
+
+                    # Skip if in comments
+                    if context_analyzer.is_likely_comment_or_docs(context, match.group()):
+                        continue
+
                     indicators.append({
                         "type": "database",
                         "detected": db_type.value,
                         "source": "js_pattern",
                         "pattern": js_pattern,
-                        "confidence": 0.75
+                        "confidence": SOURCE_RELIABILITY["js_pattern"],
+                        "context_validated": True,
+                        "validation_rule": "context_aware"
                     })
 
-        # Check framework patterns
+        # Check framework patterns with context awareness
         for fw_type, patterns in self.FRAMEWORK_PATTERNS.items():
             for indicator in patterns.get("indicators", []):
-                if re.search(indicator, body, re.IGNORECASE):
+                for match in re.finditer(indicator, body, re.IGNORECASE):
+                    context = context_analyzer.extract_context(body, match.start())
+
+                    # Skip if in comments/docs
+                    if context_analyzer.is_likely_comment_or_docs(context, match.group()):
+                        continue
+
+                    is_executable = context_analyzer.is_executable_code(context)
+                    base_confidence = 0.75 if is_executable else 0.50
+
                     indicators.append({
                         "type": "framework",
                         "detected": fw_type.value,
                         "source": "body_pattern",
-                        "confidence": 0.7
+                        "pattern": indicator,
+                        "confidence": base_confidence * SOURCE_RELIABILITY["body_pattern"],
+                        "context_validated": is_executable,
+                        "validation_rule": "context_aware"
+                    })
+
+            # Also check JS-specific patterns for frameworks
+            for js_pattern in patterns.get("js_patterns", []):
+                for match in re.finditer(js_pattern, body, re.IGNORECASE):
+                    context = context_analyzer.extract_context(body, match.start())
+
+                    if context_analyzer.is_likely_comment_or_docs(context, match.group()):
+                        continue
+
+                    indicators.append({
+                        "type": "framework",
+                        "detected": fw_type.value,
+                        "source": "js_pattern",
+                        "pattern": js_pattern,
+                        "confidence": SOURCE_RELIABILITY["js_pattern"],
+                        "context_validated": True,
+                        "validation_rule": "context_aware"
                     })
 
         return indicators
@@ -324,6 +633,9 @@ class ReconnaissancePhase:
         """
         Analyze discovered URLs for technology indicators.
 
+        Uses proper path boundary validation to prevent false positives
+        from substring matches (e.g., /api-v2 matching /api).
+
         Args:
             urls: List of URLs/endpoints found
 
@@ -331,40 +643,60 @@ class ReconnaissancePhase:
             List of detected indicators
         """
         indicators = []
+        url_validator = URLValidator()
 
         for url in urls:
-            # Check database-related endpoints
+            # Check database-related endpoints with boundary validation
             for db_type, patterns in self.DATABASE_PATTERNS.items():
                 for endpoint in patterns.get("endpoints", []):
-                    if endpoint in url:
+                    is_valid, confidence = url_validator.validate_endpoint_in_url(
+                        endpoint,
+                        url
+                    )
+                    if is_valid:
                         indicators.append({
                             "type": "database",
                             "detected": db_type.value,
                             "source": "endpoint",
                             "url": url,
-                            "confidence": 0.9
+                            "endpoint": endpoint,
+                            "confidence": confidence * SOURCE_RELIABILITY["endpoint_structure"],
+                            "validation_rule": "endpoint_boundary"
                         })
 
+                # Domain matching with boundary validation
                 for domain in patterns.get("domains", []):
-                    if domain in url:
+                    is_valid, confidence = url_validator.validate_domain_in_url(
+                        domain,
+                        url
+                    )
+                    if is_valid:
                         indicators.append({
                             "type": "database",
                             "detected": db_type.value,
                             "source": "domain",
                             "url": url,
-                            "confidence": 0.95
+                            "domain": domain,
+                            "confidence": confidence * SOURCE_RELIABILITY["domain"],
+                            "validation_rule": "domain_boundary"
                         })
 
-            # Check framework endpoints
+            # Check framework endpoints with boundary validation
             for fw_type, patterns in self.FRAMEWORK_PATTERNS.items():
                 for endpoint in patterns.get("endpoints", []):
-                    if endpoint in url:
+                    is_valid, confidence = url_validator.validate_endpoint_in_url(
+                        endpoint,
+                        url
+                    )
+                    if is_valid:
                         indicators.append({
                             "type": "framework",
                             "detected": fw_type.value,
                             "source": "endpoint",
                             "url": url,
-                            "confidence": 0.85
+                            "endpoint": endpoint,
+                            "confidence": confidence * SOURCE_RELIABILITY["endpoint_structure"],
+                            "validation_rule": "endpoint_boundary"
                         })
 
         return indicators
@@ -379,6 +711,9 @@ class ReconnaissancePhase:
         """
         Consolidate all indicators into a final fingerprint.
 
+        Uses weighted confidence scoring based on source reliability and
+        detects conflicting indicators that may suggest false positives.
+
         Args:
             header_indicators: Indicators from header analysis
             body_indicators: Indicators from body analysis
@@ -392,44 +727,116 @@ class ReconnaissancePhase:
         fingerprint = TechFingerprint(target=target)
         fingerprint.raw_indicators = all_indicators
 
-        # Aggregate confidence scores by technology
-        db_scores: dict[DatabaseType, list[float]] = {}
-        fw_scores: dict[FrameworkType, list[float]] = {}
+        # Detect conflicts that may indicate false positives
+        conflicts = ConflictDetector.detect_conflicts(all_indicators)
+        if conflicts:
+            fingerprint.confidence_scores["_conflicts"] = conflicts
+
+        # Group indicators by technology with source tracking
+        db_indicators: dict[DatabaseType, list[dict]] = defaultdict(list)
+        fw_indicators: dict[FrameworkType, list[dict]] = defaultdict(list)
 
         for indicator in all_indicators:
             if indicator["type"] == "database":
                 db_type = DatabaseType(indicator["detected"])
-                if db_type not in db_scores:
-                    db_scores[db_type] = []
-                db_scores[db_type].append(indicator["confidence"])
+                db_indicators[db_type].append(indicator)
             elif indicator["type"] == "framework":
                 fw_type = FrameworkType(indicator["detected"])
-                if fw_type not in fw_scores:
-                    fw_scores[fw_type] = []
-                fw_scores[fw_type].append(indicator["confidence"])
+                fw_indicators[fw_type].append(indicator)
 
-        # Calculate final confidence and add to fingerprint
-        for db_type, scores in db_scores.items():
-            # Use weighted average with bonus for multiple indicators
-            avg_confidence = sum(scores) / len(scores)
-            multi_indicator_bonus = min(0.1 * (len(scores) - 1), 0.15)
-            final_confidence = min(avg_confidence + multi_indicator_bonus, 1.0)
+        # Calculate weighted confidence for databases
+        for db_type, indicators in db_indicators.items():
+            final_confidence, metadata = self._calculate_weighted_confidence(indicators)
 
-            if final_confidence >= 0.5:  # Threshold for inclusion
+            # Higher threshold (0.6) to reduce false positives
+            if final_confidence >= 0.6:
                 fingerprint.databases.append(db_type)
-                fingerprint.confidence_scores[f"database_{db_type.value}"] = final_confidence
+                fingerprint.confidence_scores[f"database_{db_type.value}"] = round(
+                    final_confidence, 3
+                )
+                fingerprint.confidence_scores[f"database_{db_type.value}_metadata"] = metadata
 
-        for fw_type, scores in fw_scores.items():
-            avg_confidence = sum(scores) / len(scores)
-            multi_indicator_bonus = min(0.1 * (len(scores) - 1), 0.15)
-            final_confidence = min(avg_confidence + multi_indicator_bonus, 1.0)
+        # Calculate weighted confidence for frameworks
+        for fw_type, indicators in fw_indicators.items():
+            final_confidence, metadata = self._calculate_weighted_confidence(indicators)
 
-            if final_confidence >= 0.5:
+            # Frameworks need slightly higher threshold
+            if final_confidence >= 0.65:
                 fingerprint.frameworks.append(fw_type)
-                fingerprint.confidence_scores[f"framework_{fw_type.value}"] = final_confidence
+                fingerprint.confidence_scores[f"framework_{fw_type.value}"] = round(
+                    final_confidence, 3
+                )
+                fingerprint.confidence_scores[f"framework_{fw_type.value}_metadata"] = metadata
 
         self.results[target] = fingerprint
         return fingerprint
+
+    def _calculate_weighted_confidence(
+        self,
+        indicators: list[dict],
+        source_overlap_penalty: float = 0.1
+    ) -> tuple[float, dict]:
+        """
+        Calculate weighted confidence with source reliability.
+
+        Args:
+            indicators: List of indicator dicts with confidence scores
+            source_overlap_penalty: Penalty for same-source indicators
+
+        Returns:
+            (final_confidence, metadata_dict)
+        """
+        if not indicators:
+            return 0.0, {"reason": "no_indicators"}
+
+        # Get source types and confidences
+        sources = [
+            ind.get("validation_rule", ind.get("source", "unknown"))
+            for ind in indicators
+        ]
+        confidences = [ind.get("confidence", 0.5) for ind in indicators]
+
+        # Apply source reliability weighting
+        weighted_scores = []
+        for conf, source in zip(confidences, sources):
+            reliability = SOURCE_RELIABILITY.get(source, SOURCE_RELIABILITY["unknown"])
+            weighted_scores.append(conf * reliability)
+
+        # Calculate mean
+        avg_weighted = mean(weighted_scores)
+
+        # Consistency bonus: if stddev is low, indicators are consistent
+        consistency_bonus = 0.0
+        std_deviation = 0.0
+        if len(weighted_scores) > 1:
+            std_deviation = stdev(weighted_scores)
+            consistency_bonus = max(0, 0.05 - (std_deviation / 20))
+
+        # Source diversity penalty: same source types are less valuable
+        unique_sources = len(set(sources))
+        total_sources = len(sources)
+        diversity_penalty = 0.0
+        if total_sources > 1:
+            diversity_penalty = (
+                (1.0 - (unique_sources / total_sources)) * source_overlap_penalty
+            )
+
+        # Final calculation
+        final_confidence = min(
+            avg_weighted + consistency_bonus - diversity_penalty,
+            1.0
+        )
+
+        metadata = {
+            "avg_weighted": round(avg_weighted, 3),
+            "consistency_bonus": round(consistency_bonus, 3),
+            "diversity_penalty": round(diversity_penalty, 3),
+            "unique_sources": unique_sources,
+            "total_indicators": total_sources,
+            "std_deviation": round(std_deviation, 3) if std_deviation else 0
+        }
+
+        return final_confidence, metadata
 
     def get_supabase_indicators(self) -> dict:
         """Return specific indicators for Supabase detection"""

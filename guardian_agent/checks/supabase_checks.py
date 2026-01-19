@@ -3,10 +3,18 @@ Supabase-Specific Security Checks
 
 Checks for Row Level Security (RLS), API key exposure, and
 other Supabase-specific vulnerabilities.
+
+Key Detection Improvements:
+- Context-aware matching (excludes comments/documentation)
+- Whitespace-flexible patterns for code variations
+- JWT payload analysis to identify service vs anon keys
+- Obfuscation pattern detection
 """
 
 from dataclasses import dataclass
 from typing import Optional, Callable
+import base64
+import json
 import re
 
 
@@ -135,32 +143,165 @@ class SupabaseSecurityChecks:
     ) -> SupabaseCheckResult:
         """
         Analyze client-side code for exposed Supabase keys.
+
+        Enhanced detection with:
+        - Context-aware matching (excludes comments/docs)
+        - Whitespace-flexible patterns
+        - JWT payload analysis
+        - Obfuscation detection
         """
         evidence = []
         vulnerable = False
+        high_severity_findings = []
 
-        # Look for service_role key patterns
+        # Enhanced patterns with whitespace flexibility and context
         service_patterns = [
-            r'supabase\.createClient\([^)]*service[_]?role',
-            r'SUPABASE_SERVICE_ROLE',
-            r'service_role_key',
-            r'"role"\s*:\s*"service_role"'
+            {
+                "pattern": r'createClient\s*\(\s*[^)]*service[_\-]?role',
+                "severity": "critical",
+                "message": "service_role keyword found in createClient"
+            },
+            {
+                "pattern": r'(?:service[_\-]?role[_\-]?key|SUPABASE_SERVICE_ROLE)\s*[:=]',
+                "severity": "critical",
+                "message": "service_role key assignment detected"
+            },
+            {
+                "pattern": r'["\']role["\']\s*:\s*["\']service[_\-]?role["\']',
+                "severity": "critical",
+                "message": "role property set to service_role"
+            },
+            {
+                "pattern": r'supabaseServiceKey\s*[:=]',
+                "severity": "critical",
+                "message": "supabaseServiceKey variable detected"
+            },
+            {
+                "pattern": r'SUPABASE_SERVICE_ROLE_KEY',
+                "severity": "critical",
+                "message": "SUPABASE_SERVICE_ROLE_KEY constant found"
+            }
         ]
 
-        for pattern in service_patterns:
-            if re.search(pattern, code_content, re.IGNORECASE):
+        for pattern_config in service_patterns:
+            for match in re.finditer(pattern_config["pattern"], code_content, re.IGNORECASE | re.MULTILINE):
+                # Context check - skip if in comment
+                match_start = match.start()
+                line_start = code_content.rfind('\n', 0, match_start) + 1
+                line_end = code_content.find('\n', match_start)
+                if line_end == -1:
+                    line_end = len(code_content)
+                line = code_content[line_start:line_end]
+
+                # Check for comment markers before match
+                comment_markers = ['//', '#', '/*', '*', '--']
+                match_col = match_start - line_start
+                is_comment = any(
+                    marker in line[:match_col]
+                    for marker in comment_markers
+                )
+
+                # Check if in environment variable reference (good practice)
+                env_patterns = ['process.env', 'os.environ', 'getenv', 'ENV[']
+                is_env_ref = any(env in line for env in env_patterns)
+
+                if is_comment:
+                    continue
+
+                if is_env_ref:
+                    # Environment variable reference is acceptable
+                    evidence.append({
+                        "type": "info",
+                        "message": "Service key loaded from environment variable (good practice)",
+                        "context": line.strip()[:100]
+                    })
+                    continue
+
+                # Found actual service_role key usage
                 vulnerable = True
-                evidence.append(f"Potential service_role key usage found")
+                high_severity_findings.append(pattern_config["message"])
+                evidence.append({
+                    "type": pattern_config["severity"],
+                    "message": pattern_config["message"],
+                    "matched_text": match.group()[:50],
+                    "line": line.strip()[:100]
+                })
+
+        # Check for hardcoded JWT tokens that might be service keys
+        jwt_pattern = r'eyJ[A-Za-z0-9_-]{50,}\.[A-Za-z0-9_-]{50,}\.[A-Za-z0-9_-]{50,}'
+        for jwt_match in re.finditer(jwt_pattern, code_content):
+            jwt = jwt_match.group()
+
+            # Check context - is it in an assignment or usage?
+            context_start = max(0, jwt_match.start() - 50)
+            context = code_content[context_start:jwt_match.end() + 10]
+
+            # Skip if clearly a comment
+            if '//' in context[:50] or '#' in context[:50]:
+                continue
+
+            try:
+                # Decode JWT payload to check role
+                import base64
+                import json
+
+                payload_b64 = jwt.split('.')[1]
+                # Add padding if needed
+                payload_b64 += '=' * (4 - len(payload_b64) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+
+                if payload.get('role') == 'service_role':
+                    vulnerable = True
+                    high_severity_findings.append("Hardcoded service_role JWT token")
+                    evidence.append({
+                        "type": "critical",
+                        "message": "Hardcoded service_role JWT token found",
+                        "jwt_preview": jwt[:30] + "..."
+                    })
+                elif payload.get('role') == 'anon':
+                    # Anon key in code is expected
+                    evidence.append({
+                        "type": "info",
+                        "message": "Anon key found (expected for client-side)"
+                    })
+            except Exception:
+                # JWT couldn't be decoded, check if it's suspiciously long (service keys are longer)
+                if len(jwt) > 500:  # Service role JWTs are typically longer
+                    evidence.append({
+                        "type": "warning",
+                        "message": "Long JWT token found - verify it's not a service key",
+                        "jwt_length": len(jwt)
+                    })
+
+        # Check for obfuscated patterns
+        obfuscation_indicators = [
+            r'atob\s*\(\s*["\'][^"\']+service',
+            r'Buffer\.from\s*\(\s*["\'][^"\']+role',
+            r'decodeURIComponent\s*\(\s*["\'][^"\']+supabase',
+        ]
+
+        for pattern in obfuscation_indicators:
+            if re.search(pattern, code_content, re.IGNORECASE):
+                evidence.append({
+                    "type": "warning",
+                    "message": "Potential obfuscated key pattern detected",
+                    "pattern": pattern[:30]
+                })
+
+        severity = "critical" if vulnerable else ("warning" if evidence else "info")
 
         return SupabaseCheckResult(
             check_id="SUP-003",
             vulnerable=vulnerable,
-            severity="critical" if vulnerable else "info",
-            evidence=evidence,
+            severity=severity,
+            evidence=evidence if evidence else ["No service_role key exposure detected"],
             remediation=(
+                f"CRITICAL: {'; '.join(high_severity_findings)}. "
+                if high_severity_findings else ""
+            ) + (
                 "NEVER expose service_role key in client-side code. "
                 "Use only the anon key for client applications. "
-                "Service role should only be used server-side."
+                "Service role should only be used server-side with proper security controls."
             )
         )
 
