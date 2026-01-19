@@ -354,9 +354,156 @@ class TargetedTestingPhase:
                 remediation="Use secure, time-limited tokens. Verify email ownership."
             ),
         ],
+
+        # ==================== REACT/NEXT.JS TESTS ====================
+        "react": [
+            TestCase(
+                id="REACT-001",
+                name="XSS via dangerouslySetInnerHTML",
+                description="Test for unsanitized HTML injection via dangerouslySetInnerHTML",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.HIGH,
+                remediation="Use DOMPurify to sanitize HTML: dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(content) }}"
+            ),
+            TestCase(
+                id="REACT-002",
+                name="XSS via href javascript: Protocol",
+                description="Test for javascript: protocol injection in href attributes",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.HIGH,
+                remediation="Validate URLs against allowlist of protocols (http:, https:, mailto:). Use URL constructor for validation."
+            ),
+            TestCase(
+                id="REACT-003",
+                name="Prototype Pollution",
+                description="Test for prototype pollution via object spread/merge operations",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                remediation="Use Object.create(null) for safe objects. Validate keys before assignment. Freeze sensitive objects."
+            ),
+            TestCase(
+                id="REACT-004",
+                name="Next.js Server Action Injection",
+                description="Test Server Actions for command/SQL injection vulnerabilities",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["nextjs"],
+                severity_if_vulnerable=Severity.CRITICAL,
+                remediation="Validate all inputs with zod. Use parameterized queries. Never use eval() or dynamic require()."
+            ),
+            TestCase(
+                id="REACT-005",
+                name="RSC Serialization Attack",
+                description="Test React Server Components for unsafe serialization/deserialization",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.HIGH,
+                remediation="Never JSON.parse untrusted searchParams. Use 'server-only' for sensitive code. Use taint API for secrets."
+            ),
+            TestCase(
+                id="REACT-006",
+                name="Client State Secret Exposure",
+                description="Check for sensitive data exposure in React state (visible in DevTools)",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                remediation="Never store secrets in client state. Use httpOnly cookies for tokens. Clear sensitive data on unmount."
+            ),
+            TestCase(
+                id="REACT-007",
+                name="__NEXT_DATA__ Sensitive Exposure",
+                description="Check for sensitive data leakage in __NEXT_DATA__ script tag",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["nextjs"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                remediation="Filter sensitive data in getServerSideProps/getStaticProps. Never pass secrets to page props."
+            ),
+            TestCase(
+                id="REACT-008",
+                name="Development Mode in Production",
+                description="Detect React/Next.js running in development mode in production",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.LOW,
+                remediation="Use production builds: NODE_ENV=production npm run build. Remove React DevTools in production."
+            ),
+            TestCase(
+                id="REACT-009",
+                name="Source Map Exposure",
+                description="Check for exposed source maps revealing source code",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                remediation="Disable source maps in production: productionBrowserSourceMaps: false in next.config.js"
+            ),
+            TestCase(
+                id="REACT-010",
+                name="Unvalidated Redirect in Server Actions",
+                description="Test for open redirect vulnerabilities in Next.js redirect()",
+                category=TestCategory.ACTIVE_TEST,
+                target_tech=["nextjs"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                safe_check_available=False,
+                remediation="Validate redirect paths against allowlist. Never redirect to user-controlled URLs directly."
+            ),
+            TestCase(
+                id="REACT-011",
+                name="Server Action CSRF",
+                description="Test Server Actions for CSRF protection bypass",
+                category=TestCategory.ACTIVE_TEST,
+                target_tech=["nextjs"],
+                severity_if_vulnerable=Severity.HIGH,
+                safe_check_available=False,
+                remediation="Ensure Server Actions use proper origin validation. Add custom CSRF tokens for sensitive actions."
+            ),
+            TestCase(
+                id="REACT-012",
+                name="Hydration Mismatch Exploitation",
+                description="Test for security issues arising from SSR/client hydration mismatches",
+                category=TestCategory.ACTIVE_TEST,
+                target_tech=["react", "nextjs"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                safe_check_available=False,
+                remediation="Ensure server and client render identical content. Use useEffect for client-only operations."
+            ),
+        ],
+
+        # ==================== REMIX TESTS ====================
+        "remix": [
+            TestCase(
+                id="REMIX-001",
+                name="Loader Data Injection",
+                description="Test loader functions for injection vulnerabilities",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["remix"],
+                severity_if_vulnerable=Severity.HIGH,
+                remediation="Validate all params in loaders. Use parameterized database queries."
+            ),
+            TestCase(
+                id="REMIX-002",
+                name="Action Function Injection",
+                description="Test action functions for command/SQL injection",
+                category=TestCategory.SAFE_CHECK,
+                target_tech=["remix"],
+                severity_if_vulnerable=Severity.CRITICAL,
+                remediation="Validate formData with zod. Never pass raw input to shell commands or queries."
+            ),
+            TestCase(
+                id="REMIX-003",
+                name="Unvalidated Redirect",
+                description="Test for open redirect in Remix redirect() calls",
+                category=TestCategory.ACTIVE_TEST,
+                target_tech=["remix"],
+                severity_if_vulnerable=Severity.MEDIUM,
+                safe_check_available=False,
+                remediation="Validate redirect URLs against allowlist of paths."
+            ),
+        ],
     }
 
-    # Decision tree for test selection
+    # Decision tree for test selection (databases)
     DECISION_TREE = {
         DatabaseType.SUPABASE: {
             "priority_tests": ["SUP-001", "SUP-002", "SUP-003", "SUP-005"],
@@ -379,6 +526,51 @@ class TargetedTestingPhase:
             "follow_up_on_vulnerable": {
                 "PG-001": ["PG-002", "PG-003"],  # If error-based works, try UNION/blind
             }
+        },
+    }
+
+    # Decision tree for frameworks
+    FRAMEWORK_DECISION_TREE = {
+        FrameworkType.REACT: {
+            "priority_tests": [
+                "REACT-001", "REACT-002", "REACT-003",  # XSS and prototype pollution
+                "REACT-006", "REACT-008", "REACT-009"   # State exposure, dev mode, source maps
+            ],
+            "requires_approval": ["REACT-012"],  # Hydration exploitation
+            "follow_up_on_vulnerable": {
+                "REACT-001": ["REACT-012"],  # If XSS found, check hydration issues
+                "REACT-003": ["REACT-012"],  # If prototype pollution, check hydration
+            }
+        },
+        FrameworkType.NEXTJS: {
+            "priority_tests": [
+                "REACT-001", "REACT-002", "REACT-003",  # Core React XSS checks
+                "REACT-004", "REACT-005",               # Server Actions and RSC
+                "REACT-006", "REACT-007",               # State and __NEXT_DATA__ exposure
+                "REACT-008", "REACT-009"                # Dev mode and source maps
+            ],
+            "requires_approval": ["REACT-010", "REACT-011", "REACT-012"],
+            "follow_up_on_vulnerable": {
+                "REACT-004": ["REACT-010", "REACT-011"],  # If Server Action issues, test redirects and CSRF
+                "REACT-005": ["REACT-012"],               # If RSC serialization issues, test hydration
+                "REACT-007": ["REACT-005"],               # If data exposure, deeper RSC checks
+            }
+        },
+        FrameworkType.REMIX: {
+            "priority_tests": ["REMIX-001", "REMIX-002"],
+            "requires_approval": ["REMIX-003"],
+            "follow_up_on_vulnerable": {
+                "REMIX-001": ["REMIX-003"],  # If loader injection, test redirects
+                "REMIX-002": ["REMIX-003"],  # If action injection, test redirects
+            }
+        },
+        FrameworkType.GATSBY: {
+            "priority_tests": [
+                "REACT-001", "REACT-002", "REACT-003",  # Core React checks
+                "REACT-006", "REACT-008", "REACT-009"   # State, dev mode, source maps
+            ],
+            "requires_approval": [],
+            "follow_up_on_vulnerable": {}
         },
     }
 
@@ -407,7 +599,7 @@ class TargetedTestingPhase:
         applicable_tests.extend(self.TEST_CASES.get("api", []))
         applicable_tests.extend(self.TEST_CASES.get("auth", []))
 
-        # Add technology-specific tests
+        # Add database-specific tests
         for db in fingerprint.databases:
             db_key = db.value.lower()
             if db_key in self.TEST_CASES:
@@ -415,6 +607,30 @@ class TargetedTestingPhase:
                 if not include_exploit_tests:
                     tests = [t for t in tests if t.category == TestCategory.SAFE_CHECK]
                 applicable_tests.extend(tests)
+
+        # Add framework-specific tests (React, Next.js, Remix, etc.)
+        for fw in fingerprint.frameworks:
+            fw_key = fw.value.lower()
+            if fw_key in self.TEST_CASES:
+                tests = self.TEST_CASES[fw_key]
+                if not include_exploit_tests:
+                    tests = [t for t in tests if t.category == TestCategory.SAFE_CHECK]
+                applicable_tests.extend(tests)
+
+            # Special case: Next.js also gets React tests
+            if fw == FrameworkType.NEXTJS and "react" in self.TEST_CASES:
+                react_tests = self.TEST_CASES["react"]
+                if not include_exploit_tests:
+                    react_tests = [t for t in react_tests if t.category == TestCategory.SAFE_CHECK]
+                applicable_tests.extend(react_tests)
+
+            # Remix also gets some React tests (XSS checks)
+            if fw == FrameworkType.REMIX and "react" in self.TEST_CASES:
+                react_tests = [t for t in self.TEST_CASES["react"]
+                              if t.id in ["REACT-001", "REACT-002", "REACT-003"]]
+                if not include_exploit_tests:
+                    react_tests = [t for t in react_tests if t.category == TestCategory.SAFE_CHECK]
+                applicable_tests.extend(react_tests)
 
         # Deduplicate
         seen_ids = set()
@@ -448,31 +664,64 @@ class TargetedTestingPhase:
             "requires_exploit_approval": False
         }
 
+        added_test_ids = set()  # Track added tests to avoid duplicates
+
+        # Process database-specific tests
         for db in fingerprint.databases:
             if db in self.DECISION_TREE:
                 tree = self.DECISION_TREE[db]
 
                 # Phase 1: Safe checks (priority tests)
                 for test_id in tree.get("priority_tests", []):
-                    test = self._find_test_by_id(test_id)
-                    if test and test.category == TestCategory.SAFE_CHECK:
-                        plan["phase_1_safe_checks"].append(test.to_dict())
+                    if test_id not in added_test_ids:
+                        test = self._find_test_by_id(test_id)
+                        if test and test.category == TestCategory.SAFE_CHECK:
+                            plan["phase_1_safe_checks"].append(test.to_dict())
+                            added_test_ids.add(test_id)
 
                 # Phase 2: Tests requiring approval
                 for test_id in tree.get("requires_approval", []):
-                    test = self._find_test_by_id(test_id)
-                    if test:
-                        plan["phase_2_active_tests"].append(test.to_dict())
-                        plan["requires_exploit_approval"] = True
+                    if test_id not in added_test_ids:
+                        test = self._find_test_by_id(test_id)
+                        if test:
+                            plan["phase_2_active_tests"].append(test.to_dict())
+                            plan["requires_exploit_approval"] = True
+                            added_test_ids.add(test_id)
 
                 # Conditional follow-ups
                 plan["conditional_tests"][db.value] = tree.get("follow_up_on_vulnerable", {})
 
+        # Process framework-specific tests (React, Next.js, Remix, etc.)
+        for fw in fingerprint.frameworks:
+            if fw in self.FRAMEWORK_DECISION_TREE:
+                tree = self.FRAMEWORK_DECISION_TREE[fw]
+
+                # Phase 1: Safe checks (priority tests)
+                for test_id in tree.get("priority_tests", []):
+                    if test_id not in added_test_ids:
+                        test = self._find_test_by_id(test_id)
+                        if test and test.category == TestCategory.SAFE_CHECK:
+                            plan["phase_1_safe_checks"].append(test.to_dict())
+                            added_test_ids.add(test_id)
+
+                # Phase 2: Tests requiring approval
+                for test_id in tree.get("requires_approval", []):
+                    if test_id not in added_test_ids:
+                        test = self._find_test_by_id(test_id)
+                        if test:
+                            plan["phase_2_active_tests"].append(test.to_dict())
+                            plan["requires_exploit_approval"] = True
+                            added_test_ids.add(test_id)
+
+                # Conditional follow-ups
+                plan["conditional_tests"][fw.value] = tree.get("follow_up_on_vulnerable", {})
+
         # Add generic API tests to phase 1
         for test in self.TEST_CASES.get("api", []):
             if test.category == TestCategory.SAFE_CHECK:
-                if test.to_dict() not in plan["phase_1_safe_checks"]:
+                if test.id not in added_test_ids:
                     plan["phase_1_safe_checks"].append(test.to_dict())
+                    added_test_ids.add(test.id)
 
         plan["total_safe_checks"] = len(plan["phase_1_safe_checks"])
         plan["total_active_tests"] = len(plan["phase_2_active_tests"])

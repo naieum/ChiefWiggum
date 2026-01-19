@@ -41,6 +41,9 @@ class FrameworkType(Enum):
     NEXTJS = "nextjs"
     NUXT = "nuxt"
     LARAVEL = "laravel"
+    REACT = "react"
+    REMIX = "remix"
+    GATSBY = "gatsby"
     UNKNOWN = "unknown"
 
 
@@ -155,7 +158,34 @@ class ReconnaissancePhase:
         },
         FrameworkType.NEXTJS: {
             "headers": {"x-powered-by": "Next.js"},
-            "indicators": [r"_next/", r"__NEXT_DATA__"]
+            "indicators": [r"_next/", r"__NEXT_DATA__", r"next/router", r"next/link"],
+            "endpoints": ["/_next/static/", "/_next/image", "/api/"],
+            "js_patterns": [r"next/app", r"next/server", r"'use server'", r"'use client'"]
+        },
+        FrameworkType.REACT: {
+            "headers": {},
+            "indicators": [
+                r"react-dom", r"react\.production", r"react\.development",
+                r"__REACT_DEVTOOLS_GLOBAL_HOOK__", r"_reactRootContainer",
+                r"data-reactroot", r"data-react-helmet"
+            ],
+            "js_patterns": [
+                r"React\.createElement", r"ReactDOM\.render", r"ReactDOM\.createRoot",
+                r"useState\s*\(", r"useEffect\s*\(", r"useContext\s*\(",
+                r"from\s+['\"]react['\"]", r"@babel/react"
+            ]
+        },
+        FrameworkType.REMIX: {
+            "headers": {},
+            "indicators": [r"__remixContext", r"__remixManifest", r"remix-run"],
+            "endpoints": ["/_data", "/build/"],
+            "js_patterns": [r"@remix-run/", r"useLoaderData", r"useActionData"]
+        },
+        FrameworkType.GATSBY: {
+            "headers": {"x-powered-by": "Gatsby"},
+            "indicators": [r"gatsby", r"___gatsby", r"page-data.json"],
+            "endpoints": ["/page-data/", "/static/"],
+            "js_patterns": [r"gatsby-browser", r"gatsby-ssr", r"@gatsbyjs/"]
         },
         FrameworkType.SPRING: {
             "headers": {},
@@ -466,5 +496,133 @@ class ReconnaissancePhase:
             ],
             "version_detection": [
                 r"PostgreSQL \d+\.\d+"
+            ]
+        }
+
+    def get_react_indicators(self) -> dict:
+        """Return specific indicators for React/Next.js detection"""
+        return {
+            "react_core": {
+                "dom_patterns": [
+                    r"data-reactroot",
+                    r"data-react-helmet",
+                    r"_reactRootContainer",
+                    r"__REACT_DEVTOOLS_GLOBAL_HOOK__"
+                ],
+                "js_patterns": [
+                    r"React\.createElement",
+                    r"ReactDOM\.(render|createRoot|hydrateRoot)",
+                    r"react\.production\.min\.js",
+                    r"react-dom\.production\.min\.js"
+                ],
+                "hooks_patterns": [
+                    r"useState\s*\(",
+                    r"useEffect\s*\(",
+                    r"useContext\s*\(",
+                    r"useReducer\s*\(",
+                    r"useMemo\s*\(",
+                    r"useCallback\s*\("
+                ]
+            },
+            "nextjs_specific": {
+                "app_router": [
+                    r"'use client'",
+                    r"'use server'",
+                    r"generateStaticParams",
+                    r"generateMetadata",
+                    r"revalidatePath",
+                    r"revalidateTag"
+                ],
+                "pages_router": [
+                    r"getServerSideProps",
+                    r"getStaticProps",
+                    r"getStaticPaths",
+                    r"_app\.tsx?",
+                    r"_document\.tsx?"
+                ],
+                "api_routes": [
+                    r"NextResponse\.(json|redirect)",
+                    r"NextRequest",
+                    r"export\s+(async\s+)?function\s+(GET|POST|PUT|DELETE|PATCH)"
+                ],
+                "data_exposure": [
+                    r"__NEXT_DATA__",
+                    r"__N_SSP",  # Server-side props marker
+                    r"__N_SSG"   # Static generation marker
+                ]
+            },
+            "react_server_components": {
+                "patterns": [
+                    r"'use server'",
+                    r"server-only",
+                    r"client-only",
+                    r"experimental_taintObjectReference",
+                    r"experimental_taintUniqueValue"
+                ],
+                "serialization_risks": [
+                    r"JSON\.parse\s*\(\s*searchParams",
+                    r"JSON\.parse\s*\(\s*cookies",
+                    r"await\s+cookies\(\)",
+                    r"await\s+headers\(\)"
+                ]
+            },
+            "security_indicators": {
+                "xss_risks": [
+                    r"dangerouslySetInnerHTML",
+                    r"\.innerHTML\s*=",
+                    r"document\.write\s*\("
+                ],
+                "prototype_pollution": [
+                    r"Object\.assign\s*\(\s*\{\s*\}\s*,",
+                    r"\{\s*\.\.\.(props|params|query)",
+                    r"_\.merge\s*\(",
+                    r"_\.defaultsDeep\s*\("
+                ],
+                "sensitive_exposure": [
+                    r"process\.env\.(?!NEXT_PUBLIC)",
+                    r"(API_KEY|SECRET|PASSWORD|TOKEN)\s*[:=]"
+                ]
+            },
+            "version_detection": {
+                "patterns": [
+                    r"react@(\d+\.\d+\.\d+)",
+                    r"react-dom@(\d+\.\d+\.\d+)",
+                    r"next@(\d+\.\d+\.\d+)",
+                    r'"react":\s*"[\^~]?(\d+\.\d+)',
+                    r'"next":\s*"[\^~]?(\d+\.\d+)'
+                ],
+                "vulnerable_versions": {
+                    "react": {
+                        "below": "16.14.0",
+                        "cve": ["CVE-2020-7919"]
+                    },
+                    "next": {
+                        "below": "13.4.0",
+                        "issues": ["Server Actions security improvements"]
+                    }
+                }
+            }
+        }
+
+    def get_remix_indicators(self) -> dict:
+        """Return specific indicators for Remix detection"""
+        return {
+            "core_patterns": [
+                r"__remixContext",
+                r"__remixManifest",
+                r"@remix-run/",
+                r"remix\.config"
+            ],
+            "data_functions": [
+                r"useLoaderData\s*\(",
+                r"useActionData\s*\(",
+                r"useFetcher\s*\(",
+                r"useSubmit\s*\(",
+                r"export\s+(async\s+)?function\s+loader",
+                r"export\s+(async\s+)?function\s+action"
+            ],
+            "security_patterns": [
+                r"redirect\s*\(\s*[^'\"]+\)",  # Unvalidated redirect
+                r"json\s*\(\s*\{[^}]*\.\.\.request",  # Spreading request
             ]
         }
