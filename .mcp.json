@@ -1,0 +1,83 @@
+{
+  "mcpServers": {
+    "guardian-agent": {
+      "command": "node",
+      "args": ["app/server.js"],
+      "env": {
+        "SCAN_MODE": "defensive",
+        "LOG_LEVEL": "INFO"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "scan_project_security",
+      "description": "Scans the current project's source code for security vulnerabilities. This is a static analysis tool that reads local files only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "scan_type": {
+            "type": "string",
+            "enum": ["full", "secrets", "injection", "config"],
+            "default": "full",
+            "description": "Type of security scan to perform on the local project."
+          },
+          "file_patterns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["**/*.js", "**/*.ts", "**/*.py"],
+            "description": "Glob patterns for files to scan within the project."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "audit_database_config",
+      "description": "Audits database configuration files in the current project for security issues like missing RLS, weak auth settings, etc.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "db_type": {
+            "type": "string",
+            "enum": ["postgres", "supabase", "mongodb", "auto"],
+            "default": "auto",
+            "description": "Database type to audit. Use 'auto' to detect from project files."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "check_localhost_headers",
+      "description": "Checks HTTP security headers on the local development server (localhost only). Requires dev server to be running.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "port": {
+            "type": "integer",
+            "default": 3000,
+            "description": "Local port where the dev server is running."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "generate_security_report",
+      "description": "Generates a formatted security report from scan findings.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "enum": ["json", "markdown", "sarif"],
+            "default": "markdown",
+            "description": "Output format for the security report."
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}
